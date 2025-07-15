@@ -46,8 +46,12 @@
 <body>
   <h1>Detection Duration Dashboard</h1>
 
-  <!-- Filters -->
+  <!-- Filters including dynamic organization selector -->
   <div id="filters">
+    <label>
+      Organization
+      <select id="org-select"></select>
+    </label>
     <label>
       Country
       <select id="country-filter"><option value="">All</option></select>
@@ -59,24 +63,24 @@
     <button id="apply-filters">Apply Filters</button>
   </div>
 
-  <!-- Status -->
+  <!-- Status messages -->
   <div id="loading" class="loading">Loading data…</div>
   <div id="error" class="error" style="display:none;"></div>
 
-  <!-- Report -->
+  <!-- Main report table -->
   <table id="report" style="display:none;">
     <thead>
       <tr>
         <th>Facility</th>
-        <th>Sum of Duration Past 30 Days (days)</th>
-        <th>Triggered Monitor Count</th>
+        <th>Total Duration (days)</th>
+        <th>Monitor Count</th>
         <th>Severity Breakdown</th>
       </tr>
     </thead>
     <tbody></tbody>
   </table>
 
-  <!-- Modal -->
+  <!-- Modal for facility detail -->
   <div id="modal-overlay">
     <div id="modal">
       <button id="modal-close">&times;</button>
@@ -87,8 +91,8 @@
         <thead>
           <tr>
             <th>Check Name</th>
-            <th>Sum of Duration in Past 30 Days (days)</th>
-            <th>Triggered Monitor Count</th>
+            <th>Total Duration (days)</th>
+            <th>Monitor Count</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -98,7 +102,20 @@
 
   <script>
   (function(){
-    // DOM refs
+    // 1) Map organization names to proxy endpoints
+    const ORG_URLS = {
+      "Lineage": "https://cp-alert-signoff-proxy.onrender.com/lineage",
+      "Demo":    "https://cp-alert-signoff-proxy.onrender.com/graphql",
+      "Emergent": "https://cp-alert-signoff-proxy.onrender.com/emergent",
+      "Americold": "https://cp-alert-signoff-proxy.onrender.com/americold",
+      "US Cold": "https://cp-alert-signoff-proxy.onrender.com/uscold",
+      "Envision": "https://cp-alert-signoff-proxy.onrender.com/envision",
+      "WL Gore": "https://cp-alert-signoff-proxy.onrender.com/wlgore"
+      // add more orgs here
+    };
+
+    // DOM references
+    const orgSelect     = document.getElementById('org-select');
     const countrySelect = document.getElementById('country-filter');
     const slugSelect    = document.getElementById('slug-filter');
     const applyBtn      = document.getElementById('apply-filters');
@@ -115,147 +132,141 @@
     const modalTable    = document.getElementById('modal-table');
     const modalTbody    = modalTable.querySelector('tbody');
 
-    // Map raw severity values to labels; 'unknown' fallback
-    const severityLabels = { '1': 'minor', '2': 'major', 'unknown': 'unknown' };
+    const severityLabels = { '1':'minor', '2':'major', 'unknown':'unknown' };
     let monitors = [];
 
-    // 1) Initial fetch of monitors
-    (async function(){
-      try {
-        const query = "\
-          query($monitorsFilter2: MonitorFilter){\
-            monitors(filter:$monitorsFilter2){\
-              nodes{\
-                name\
-                thirtyDayDetectionDurationSeconds\
-                check{name severity{value}}\
-                facilityNames\
-                facilities{nodes{country}}\
-                softwarePackageSlugs\
-              }\
+    // Populate organization dropdown
+    Object.keys(ORG_URLS).forEach(function(org){
+      orgSelect.appendChild(new Option(org, org));
+    });
+
+    // Fetch data whenever organization changes
+    orgSelect.addEventListener('change', fetchMonitors);
+    // Also apply filters on button
+    applyBtn.addEventListener('click', renderReport);
+    // Close modal
+    modalClose.addEventListener('click', ()=> modalOverlay.style.display='none');
+
+    // Initial load using first org
+    fetchMonitors();
+
+    // --- Fetch monitors from selected org URL ---
+    async function fetchMonitors(){
+      loadingEl.style.display = '';
+      errorEl.style.display   = 'none';
+      reportEl.style.display  = 'none';
+      tbody.innerHTML         = '';
+      countrySelect.innerHTML = '<option value="">All</option>';
+      slugSelect.innerHTML    = '<option value="">All</option>';
+
+      const url = ORG_URLS[orgSelect.value];
+      const query = "\
+        query($monitorsFilter2: MonitorFilter){\
+          monitors(filter:$monitorsFilter2){\
+            nodes{\
+              name\
+              thirtyDayDetectionDurationSeconds\
+              check{name severity{value}}\
+              facilityNames\
+              facilities{nodes{country}}\
+              softwarePackageSlugs\
             }\
-          }";
-        const variables = {
-          monitorsFilter2: {
-            thirtyDayDetectionDurationSeconds: { greaterThan: 604800 },
-            isEnabled: { equalTo: true }
-          }
-        };
-        const res = await fetch('https://cp-alert-signoff-proxy.onrender.com/lineage', {
+          }\
+        }";
+      const variables = {
+        monitorsFilter2:{
+          thirtyDayDetectionDurationSeconds:{greaterThan:604800},
+          isEnabled:{equalTo:true}
+        }
+      };
+
+      try {
+        const res = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ query: query, variables: variables })
         });
-        if (!res.ok) throw new Error('Status ' + res.status);
+        if(!res.ok) throw new Error('Status ' + res.status);
         const json = await res.json();
         monitors = json.data.monitors.nodes;
 
         populateFilters();
         renderReport();
-      } catch(err) {
+      } catch(err){
         loadingEl.style.display = 'none';
-        errorEl.textContent = 'Error loading data: ' + err.message;
-        errorEl.style.display = '';
+        errorEl.textContent     = 'Error loading data: ' + err.message;
+        errorEl.style.display   = '';
       }
-    })();
+    }
 
-    // 2) Build filter dropdowns
+    // --- Build country & slug filters from fetched data ---
     function populateFilters(){
       const countries = new Set(), slugs = new Set();
       monitors.forEach(function(n){
-        // Collect country from each facility
-        (n.facilities.nodes || []).forEach(function(f){
-          if (f.country) countries.add(f.country);
-        });
-        // Collect software slugs
-        (n.softwarePackageSlugs || []).forEach(function(s){
-          if (s) slugs.add(s);
-        });
+        (n.facilities.nodes||[]).forEach(f=>f.country && countries.add(f.country));
+        (n.softwarePackageSlugs||[]).forEach(s=>s && slugs.add(s));
       });
-      countries.forEach(function(c){
-        countrySelect.appendChild(new Option(c, c));
-      });
-      slugs.forEach(function(s){
-        slugSelect.appendChild(new Option(s, s));
-      });
-      // Hide loading spinner once filters ready
+      countries.forEach(c => countrySelect.appendChild(new Option(c,c)));
+      slugs.forEach(s => slugSelect.appendChild(new Option(s,s)));
       loadingEl.style.display = 'none';
     }
 
-    // 3) Re-render on filter change
-    applyBtn.addEventListener('click', renderReport);
-
-    // 4) Main rendering of the report table
+    // --- Render main report table based on filters ---
     function renderReport(){
-      // clear previous
-      tbody.innerHTML = '';
+      tbody.innerHTML   = '';
       errorEl.style.display = 'none';
       reportEl.style.display = 'none';
 
       const cf = countrySelect.value, sf = slugSelect.value;
-      // filter monitors by country & slug
       const filtered = monitors.filter(function(n){
-        const countries = (n.facilities.nodes || []).map(function(f){ return f.country; });
-        return (!cf || countries.includes(cf)) &&
-               (!sf || n.softwarePackageSlugs.includes(sf));
+        const countries = (n.facilities.nodes||[]).map(f=>f.country);
+        return (!cf||countries.includes(cf)) &&
+               (!sf||n.softwarePackageSlugs.includes(sf));
       });
 
-      // group by facility name
       const facMap = {};
       filtered.forEach(function(n){
         const secs = n.thirtyDayDetectionDurationSeconds;
-        // Safely read severity: default to 'unknown'
-        const rawSeverity = n.check?.severity?.value ?? 'unknown';
-        const sevKey = String(rawSeverity);
-        // Wrap facilityNames as array
-        const names = n.facilityNames == null
-          ? []
-          : Array.isArray(n.facilityNames)
-            ? n.facilityNames
-            : [n.facilityNames];
+        const sevRaw = n.check?.severity?.value ?? 'unknown';
+        const sevKey = String(sevRaw);
+        const names = n.facilityNames==null
+          ? [] : Array.isArray(n.facilityNames)
+          ? n.facilityNames : [n.facilityNames];
         names.forEach(function(fac){
-          if (!fac) return;
-          if (!facMap[fac]) {
-            facMap[fac] = { totalSec: 0, count: 0, severity: {}, monitors: [] };
-          }
+          if(!fac) return;
+          if(!facMap[fac]) facMap[fac] = { totalSec:0,count:0,severity:{},monitors:[] };
           facMap[fac].totalSec += secs;
           facMap[fac].count++;
           facMap[fac].monitors.push(n);
-          const label = severityLabels[sevKey] || 'unknown';
-          facMap[fac].severity[label] = (facMap[fac].severity[label] || 0) + 1;
+          const label = severityLabels[sevKey]||'unknown';
+          facMap[fac].severity[label] = (facMap[fac].severity[label]||0)+1;
         });
       });
 
-      // convert to sorted array
       const rows = Object.entries(facMap).map(function(entry){
-        const name = entry[0], st = entry[1];
+        const name=entry[0], st=entry[1];
         return {
           name: name,
-          totalDays: (st.totalSec / 86400).toFixed(2),
+          totalDays: (st.totalSec/86400).toFixed(2),
           count: st.count,
           severity: st.severity,
           monitors: st.monitors
         };
-      }).sort(function(a,b){
-        return b.totalDays - a.totalDays;
-      });
+      }).sort(function(a,b){ return b.totalDays - a.totalDays; });
 
-      if (!rows.length) {
+      if(!rows.length){
         errorEl.textContent = 'No data matches the selected filters.';
         errorEl.style.display = '';
         return;
       }
 
-      // populate table rows and attach modal handlers
       rows.forEach(function(r){
         const tr = document.createElement('tr');
-        tr.innerHTML =
-          '<td><a class="facility-link">' + r.name + '</a></td>' +
-          '<td>' + r.totalDays + '</td>' +
-          '<td>' + r.count + '</td>' +
-          '<td>' + Object.entries(r.severity).map(function(pair){
-            return pair[0] + ': ' + pair[1];
-          }).join(', ') + '</td>';
+        tr.innerHTML = 
+          '<td><a class="facility-link">'+r.name+'</a></td>'+
+          '<td>'+r.totalDays+'</td>'+
+          '<td>'+r.count+'</td>'+
+          '<td>'+Object.entries(r.severity).map(function(p){return p[0]+': '+p[1];}).join(', ')+'</td>';
         tr.querySelector('.facility-link').addEventListener('click', function(){
           openModal(r.name, r.monitors);
         });
@@ -265,7 +276,7 @@
       reportEl.style.display = 'table';
     }
 
-    // 5) Modal logic: show breakdown by check name
+    // --- Modal for per-check breakdown ---
     function openModal(name, monList){
       modalTitle.textContent = name;
       modalTbody.innerHTML = '';
@@ -274,35 +285,28 @@
       modalLoad.style.display = '';
       modalOverlay.style.display = 'flex';
 
-      // group by check.name
       const map = {};
       monList.forEach(function(n){
         const chk = n.check.name;
         const secs = n.thirtyDayDetectionDurationSeconds;
-        if (!map[chk]) map[chk] = { totalSec: 0, count: 0 };
+        if(!map[chk]) map[chk] = { totalSec:0, count:0 };
         map[chk].totalSec += secs;
         map[chk].count++;
       });
 
-      // populate modal table
       Object.entries(map).forEach(function(entry){
-        const chk = entry[0], st = entry[1];
+        const chk=entry[0], st=entry[1];
         const tr = document.createElement('tr');
-        tr.innerHTML =
-          '<td>' + chk + '</td>' +
-          '<td>' + (st.totalSec / 86400).toFixed(2) + '</td>' +
-          '<td>' + st.count + '</td>';
+        tr.innerHTML = 
+          '<td>'+chk+'</td>'+
+          '<td>'+(st.totalSec/86400).toFixed(2)+'</td>'+
+          '<td>'+st.count+'</td>';
         modalTbody.appendChild(tr);
       });
 
       modalLoad.style.display = 'none';
       modalTable.style.display = 'table';
     }
-
-    // close modal
-    document.getElementById('modal-close').addEventListener('click', function(){
-      document.getElementById('modal-overlay').style.display = 'none';
-    });
   })();
   </script>
 </body>
