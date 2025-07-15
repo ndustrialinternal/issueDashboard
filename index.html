@@ -12,6 +12,13 @@
       text-align: center;
       margin-bottom: 1rem;
     }
+    #filters {
+      text-align: center;
+      margin-bottom: 1rem;
+    }
+    #filters label {
+      margin: 0 1rem;
+    }
     .loading, .error {
       text-align: center;
       margin-top: 2rem;
@@ -37,7 +44,19 @@
 <body>
   <h1>Facilities by 30‑Day Detection Duration</h1>
 
-  <div id="loading" class="loading">Loading data…</div>
+  <div id="filters">
+    <label>
+      Country:
+      <input type="text" id="country-filter" placeholder="e.g. USA">
+    </label>
+    <label>
+      Software Slug:
+      <input type="text" id="slug-filter" placeholder="e.g. coldos_sense">
+    </label>
+    <button id="apply-filters">Apply Filters</button>
+  </div>
+
+  <div id="loading" class="loading" style="display:none;">Loading data…</div>
   <div id="error" class="error" style="display:none;"></div>
 
   <table id="report" style="display:none;">
@@ -58,112 +77,123 @@
       const errorEl   = document.getElementById('error');
       const reportEl  = document.getElementById('report');
       const tbody     = reportEl.querySelector('tbody');
+      const btn       = document.getElementById('apply-filters');
+      const countryInput = document.getElementById('country-filter');
+      const slugInput    = document.getElementById('slug-filter');
 
-      // --- YOUR FILTERS ---
-      const COUNTRY_FILTER      = 'USA';
-      const SOFTWARE_SLUG_FILTER = 'nsight_electrical';
-      // ----------------------
+      const severityLabels = { '1': 'minor', '2': 'major' };
 
-      const query = `
-        query($monitorsFilter2: MonitorFilter) {
-          monitors(filter: $monitorsFilter2) {
-            nodes {
-              name
-              thirtyDayDetectionDurationSeconds
-              check {
-                severity {
-                  value
+      async function fetchAndRender() {
+        loadingEl.style.display = '';
+        errorEl.style.display = 'none';
+        reportEl.style.display = 'none';
+        tbody.innerHTML = '';
+
+        const countryFilter = countryInput.value.trim();
+        const slugFilter    = slugInput.value.trim();
+
+        const query = `
+          query($monitorsFilter2: MonitorFilter) {
+            monitors(filter: $monitorsFilter2) {
+              nodes {
+                name
+                thirtyDayDetectionDurationSeconds
+                check {
+                  severity {
+                    value
+                  }
                 }
-              }
-              facilityNames
-              facilities {
-                nodes {
-                  country
+                facilityNames
+                facilities {
+                  nodes { country }
                 }
+                softwarePackageSlugs
               }
-              softwarePackageSlugs
             }
+          }`;
+        const variables = {
+          monitorsFilter2: {
+            thirtyDayDetectionDurationSeconds: { greaterThan: 604800 },
+            isEnabled: { equalTo: true }
           }
-        }`;
-      const variables = {
-        monitorsFilter2: {
-          thirtyDayDetectionDurationSeconds: { greaterThan: 604800 },
-          isEnabled: { equalTo: true }
-        }
-      };
+        };
 
-      try {
-        const res = await fetch('https://cp-alert-signoff-proxy.onrender.com/lineage', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query, variables })
-        });
-        if (!res.ok) throw new Error(`Network error: ${res.status}`);
-        const { data } = await res.json();
-
-        // 1) Filter out nodes by facility country & software slug
-        const filtered = data.monitors.nodes.filter(node => {
-          const countries = (node.facilities.nodes || []).map(f => f.country);
-          const hasCountry = countries.includes(COUNTRY_FILTER);
-          const hasSlug    = node.softwarePackageSlugs.includes(SOFTWARE_SLUG_FILTER);
-          return hasCountry && hasSlug;
-        });
-
-        // 2) Group by facility
-        const facilities = {};
-        filtered.forEach(node => {
-          const { thirtyDayDetectionDurationSeconds, check, facilityNames } = node;
-          const rawNames = facilityNames;
-          const namesList = rawNames == null
-            ? []
-            : Array.isArray(rawNames)
-              ? rawNames
-              : [rawNames];
-          namesList.forEach(fac => {
-            if (!fac) return;
-            if (!facilities[fac]) {
-              facilities[fac] = { totalSec: 0, count: 0, severity: {} };
-            }
-            facilities[fac].totalSec += thirtyDayDetectionDurationSeconds;
-            facilities[fac].count    += 1;
-            const sev = check?.severity?.value ?? 'UNKNOWN';
-            facilities[fac].severity[sev] = (facilities[fac].severity[sev] || 0) + 1;
+        try {
+          const res = await fetch('https://cp-alert-signoff-proxy.onrender.com/lineage', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query, variables })
           });
-        });
+          if (!res.ok) throw new Error(`Network error: ${res.status}`);
+          const { data } = await res.json();
 
-        // 3) Build sorted rows
-        const rows = Object.entries(facilities)
-          .map(([name, stats]) => ({
-            name,
-            totalDays: (stats.totalSec / 86400).toFixed(2),
-            count: stats.count,
-            severity: stats.severity
-          }))
-          .sort((a, b) => b.totalDays - a.totalDays);
+          // filter by country & slug
+          const filtered = data.monitors.nodes.filter(node => {
+            const countries = (node.facilities.nodes || []).map(f => f.country);
+            const okCountry = !countryFilter || countries.includes(countryFilter);
+            const okSlug    = !slugFilter || node.softwarePackageSlugs.includes(slugFilter);
+            return okCountry && okSlug;
+          });
 
-        // 4) Render table
-        rows.forEach(({ name, totalDays, count, severity }) => {
-          const tr = document.createElement('tr');
-          const sevBreak = Object.entries(severity)
-            .map(([sev, cnt]) => `${sev}: ${cnt}`)
-            .join(', ');
-          tr.innerHTML = `
-            <td>${name}</td>
-            <td>${totalDays}</td>
-            <td>${count}</td>
-            <td>${sevBreak}</td>
-          `;
-          tbody.appendChild(tr);
-        });
+          // group by facilityNames
+          const facilities = {};
+          filtered.forEach(node => {
+            const secs = node.thirtyDayDetectionDurationSeconds;
+            const sev  = String(node.check?.severity?.value || '');
+            const rawNames = node.facilityNames;
+            const namesList = rawNames == null
+              ? []
+              : Array.isArray(rawNames)
+                ? rawNames
+                : [rawNames];
+            namesList.forEach(fac => {
+              if (!fac) return;
+              if (!facilities[fac]) {
+                facilities[fac] = { totalSec: 0, count: 0, severity: {} };
+              }
+              facilities[fac].totalSec += secs;
+              facilities[fac].count    += 1;
+              const label = severityLabels[sev] || sev;
+              facilities[fac].severity[label] = (facilities[fac].severity[label] || 0) + 1;
+            });
+          });
 
-        loadingEl.style.display = 'none';
-        reportEl.style.display  = 'table';
-      } catch (err) {
-        console.error(err);
-        loadingEl.style.display = 'none';
-        errorEl.textContent = `Error loading data: ${err.message}`;
-        errorEl.style.display = '';
+          const rows = Object.entries(facilities)
+            .map(([name, stats]) => ({
+              name,
+              totalDays: (stats.totalSec / 86400).toFixed(2),
+              count: stats.count,
+              severity: stats.severity
+            }))
+            .sort((a, b) => b.totalDays - a.totalDays);
+
+          rows.forEach(({ name, totalDays, count, severity }) => {
+            const tr = document.createElement('tr');
+            const sevBreak = Object.entries(severity)
+              .map(([sev, cnt]) => `${sev}: ${cnt}`)
+              .join(', ');
+            tr.innerHTML = `
+              <td>${name}</td>
+              <td>${totalDays}</td>
+              <td>${count}</td>
+              <td>${sevBreak}</td>
+            `;
+            tbody.appendChild(tr);
+          });
+
+          loadingEl.style.display = 'none';
+          reportEl.style.display  = 'table';
+        } catch (err) {
+          console.error(err);
+          loadingEl.style.display = 'none';
+          errorEl.textContent = `Error loading data: ${err.message}`;
+          errorEl.style.display = '';
+        }
       }
+
+      btn.addEventListener('click', fetchAndRender);
+      // initial load
+      fetchAndRender();
     })();
   </script>
 </body>
