@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Detection Duration by Facility</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 1rem;
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 1rem;
+    }
+    .loading, .error {
+      text-align: center;
+      margin-top: 2rem;
+    }
+    .error {
+      color: red;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 0.5rem;
+    }
+    th {
+      background: #f0f0f0;
+      text-align: left;
+    }
+  </style>
+</head>
+<body>
+  <h1>Facilities by 30‑Day Detection Duration</h1>
+
+  <div id="loading" class="loading">Loading data…</div>
+  <div id="error" class="error" style="display:none;"></div>
+
+  <table id="report" style="display:none;">
+    <thead>
+      <tr>
+        <th>Facility</th>
+        <th>Total Duration (days)</th>
+        <th>Monitor Count</th>
+        <th>Severity Breakdown</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    (async () => {
+      const loadingEl = document.getElementById('loading');
+      const errorEl   = document.getElementById('error');
+      const reportEl  = document.getElementById('report');
+      const tbody     = reportEl.querySelector('tbody');
+
+      // 1) GraphQL query & variables
+      const query = `
+        query($monitorsFilter2: MonitorFilter) {
+          monitors(filter: $monitorsFilter2) {
+            nodes {
+              name
+              thirtyDayDetectionDurationSeconds
+              check {
+                severity {
+                  value
+                }
+              }
+              facilityNames
+            }
+          }
+        }`;
+      const variables = {
+        monitorsFilter2: {
+          thirtyDayDetectionDurationSeconds: { greaterThan: 604800 },
+          isEnabled: { equalTo: true }
+        }
+      };
+
+      try {
+        // 2) Fetch via your proxy's /lineage endpoint
+        const res = await fetch('https://cp-alert-signoff-proxy.onrender.com/lineage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, variables })
+        });
+        if (!res.ok) throw new Error(`Network error: ${res.status}`);
+        const { data } = await res.json();
+
+        // 3) Group by facility
+        const facilities = {};
+        data.monitors.nodes.forEach(node => {
+          const { thirtyDayDetectionDurationSeconds, check, facilityNames } = node;
+          facilityNames.forEach(fac => {
+            if (!facilities[fac]) {
+              facilities[fac] = { totalSec: 0, count: 0, severity: {} };
+            }
+            facilities[fac].totalSec += thirtyDayDetectionDurationSeconds;
+            facilities[fac].count += 1;
+            const sev = check.severity.value;
+            facilities[fac].severity[sev] = (facilities[fac].severity[sev] || 0) + 1;
+          });
+        });
+
+        // 4) Convert to array & sort descending
+        const rows = Object.entries(facilities)
+          .map(([name, stats]) => ({
+            name,
+            totalDays: (stats.totalSec / 86400).toFixed(2),
+            count: stats.count,
+            severity: stats.severity
+          }))
+          .sort((a, b) => b.totalDays - a.totalDays);
+
+        // 5) Render table rows
+        rows.forEach(({ name, totalDays, count, severity }) => {
+          const tr = document.createElement('tr');
+          const sevBreak = Object.entries(severity)
+            .map(([sev, cnt]) => `${sev}: ${cnt}`)
+            .join(', ');
+          tr.innerHTML = `
+            <td>${name}</td>
+            <td>${totalDays}</td>
+            <td>${count}</td>
+            <td>${sevBreak}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+
+        // 6) Show table
+        loadingEl.style.display = 'none';
+        reportEl.style.display  = 'table';
+      } catch (err) {
+        console.error(err);
+        loadingEl.style.display = 'none';
+        errorEl.textContent = `Error loading data: ${err.message}`;
+        errorEl.style.display = '';
+      }
+    })();
+  </script>
+</body>
+</html>
