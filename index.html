@@ -277,36 +277,43 @@
     }
 
     // --- Modal for per-check breakdown ---
-    function openModal(name, monList){
-      modalTitle.textContent = name;
-      modalTbody.innerHTML = '';
-      modalErr.style.display = 'none';
-      modalTable.style.display = 'none';
-      modalLoad.style.display = '';
-      modalOverlay.style.display = 'flex';
+  function openModal(name, monList){
+  // Set modal title & reset contents
+  modalTitle.textContent = name;
+  modalTbody.innerHTML   = '';
+  modalErr.style.display = 'none';
+  modalTable.style.display = 'none';
+  modalLoad.style.display  = '';
+  modalOverlay.style.display = 'flex';
 
-      const map = {};
-      monList.forEach(function(n){
-        const chk = n.check.name;
-        const secs = n.thirtyDayDetectionDurationSeconds;
-        if(!map[chk]) map[chk] = { totalSec:0, count:0 };
-        map[chk].totalSec += secs;
-        map[chk].count++;
-      });
+  // Build a map of check‑name → { totalSec, count }
+  const map = {};
+  monList.forEach(function(n){
+    // Safely grab the check name (fallback to "UNKNOWN" if missing)
+    const chk = n.check?.name ?? 'UNKNOWN';
+    const secs = n.thirtyDayDetectionDurationSeconds || 0;
 
-      Object.entries(map).forEach(function(entry){
-        const chk=entry[0], st=entry[1];
-        const tr = document.createElement('tr');
-        tr.innerHTML = 
-          '<td>'+chk+'</td>'+
-          '<td>'+(st.totalSec/86400).toFixed(2)+'</td>'+
-          '<td>'+st.count+'</td>';
-        modalTbody.appendChild(tr);
-      });
-
-      modalLoad.style.display = 'none';
-      modalTable.style.display = 'table';
+    if (!map[chk]) {
+      map[chk] = { totalSec: 0, count: 0 };
     }
+    map[chk].totalSec += secs;
+    map[chk].count++;
+  });
+
+  // Render rows into the modal table
+  Object.entries(map).forEach(function([chk, st]){
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>' + chk + '</td>' +
+      '<td>' + (st.totalSec / 86400).toFixed(2) + '</td>' +
+      '<td>' + st.count + '</td>';
+    modalTbody.appendChild(tr);
+  });
+
+  // Show the table & hide the spinner
+  modalLoad.style.display  = 'none';
+  modalTable.style.display = 'table';
+}
   })();
   </script>
 </body>
