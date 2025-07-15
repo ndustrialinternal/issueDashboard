@@ -59,7 +59,6 @@
       const reportEl  = document.getElementById('report');
       const tbody     = reportEl.querySelector('tbody');
 
-      // 1) GraphQL query & variables
       const query = `
         query($monitorsFilter2: MonitorFilter) {
           monitors(filter: $monitorsFilter2) {
@@ -83,7 +82,6 @@
       };
 
       try {
-        // 2) Fetch via your proxy's /lineage endpoint
         const res = await fetch('https://cp-alert-signoff-proxy.onrender.com/lineage', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -92,22 +90,30 @@
         if (!res.ok) throw new Error(`Network error: ${res.status}`);
         const { data } = await res.json();
 
-        // 3) Group by facility
         const facilities = {};
         data.monitors.nodes.forEach(node => {
           const { thirtyDayDetectionDurationSeconds, check, facilityNames } = node;
-          facilityNames.forEach(fac => {
+
+          // Wrap whatever facilityNames is into an array, without splitting commas
+          const rawNames = facilityNames;
+          const namesList = rawNames == null
+            ? []
+            : Array.isArray(rawNames)
+              ? rawNames
+              : [rawNames];
+
+          namesList.forEach(fac => {
+            if (!fac) return;
             if (!facilities[fac]) {
               facilities[fac] = { totalSec: 0, count: 0, severity: {} };
             }
             facilities[fac].totalSec += thirtyDayDetectionDurationSeconds;
-            facilities[fac].count += 1;
-            const sev = check.severity.value;
+            facilities[fac].count    += 1;
+            const sev = check?.severity?.value ?? 'UNKNOWN';
             facilities[fac].severity[sev] = (facilities[fac].severity[sev] || 0) + 1;
           });
         });
 
-        // 4) Convert to array & sort descending
         const rows = Object.entries(facilities)
           .map(([name, stats]) => ({
             name,
@@ -117,7 +123,6 @@
           }))
           .sort((a, b) => b.totalDays - a.totalDays);
 
-        // 5) Render table rows
         rows.forEach(({ name, totalDays, count, severity }) => {
           const tr = document.createElement('tr');
           const sevBreak = Object.entries(severity)
@@ -132,7 +137,6 @@
           tbody.appendChild(tr);
         });
 
-        // 6) Show table
         loadingEl.style.display = 'none';
         reportEl.style.display  = 'table';
       } catch (err) {
