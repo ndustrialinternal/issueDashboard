@@ -196,7 +196,7 @@
         if (!res.ok) throw new Error();
         // on success, hide login, show dashboard
         loginDiv.style.display = 'none';
-        dashDiv.style.display  = '';
+        dashDiv.style.display  = 'block';
         initDashboard();
       } catch {
         loginErr.style.display = '';
