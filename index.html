@@ -13,11 +13,20 @@
       margin-bottom: 1rem;
     }
     #filters {
-      text-align: center;
+      display: flex;
+      justify-content: center;
+      gap: 1rem;
       margin-bottom: 1rem;
     }
     #filters label {
-      margin: 0 1rem;
+      display: flex;
+      flex-direction: column;
+      font-size: 0.9rem;
+    }
+    #filters select, #filters button {
+      margin-top: 0.5rem;
+      padding: 0.4rem;
+      font-size: 1rem;
     }
     .loading, .error {
       text-align: center;
@@ -46,17 +55,21 @@
 
   <div id="filters">
     <label>
-      Country:
-      <input type="text" id="country-filter" placeholder="e.g. USA">
+      Country
+      <select id="country-filter">
+        <option value="">All</option>
+      </select>
     </label>
     <label>
-      Software Slug:
-      <input type="text" id="slug-filter" placeholder="e.g. coldos_sense">
+      Software Slug
+      <select id="slug-filter">
+        <option value="">All</option>
+      </select>
     </label>
     <button id="apply-filters">Apply Filters</button>
   </div>
 
-  <div id="loading" class="loading" style="display:none;">Loading data…</div>
+  <div id="loading" class="loading">Loading data…</div>
   <div id="error" class="error" style="display:none;"></div>
 
   <table id="report" style="display:none;">
@@ -73,40 +86,28 @@
 
   <script>
     (async () => {
-      const loadingEl = document.getElementById('loading');
-      const errorEl   = document.getElementById('error');
-      const reportEl  = document.getElementById('report');
-      const tbody     = reportEl.querySelector('tbody');
-      const btn       = document.getElementById('apply-filters');
-      const countryInput = document.getElementById('country-filter');
-      const slugInput    = document.getElementById('slug-filter');
+      const countrySelect = document.getElementById('country-filter');
+      const slugSelect    = document.getElementById('slug-filter');
+      const btn           = document.getElementById('apply-filters');
+      const loadingEl     = document.getElementById('loading');
+      const errorEl       = document.getElementById('error');
+      const reportEl      = document.getElementById('report');
+      const tbody         = reportEl.querySelector('tbody');
 
       const severityLabels = { '1': 'minor', '2': 'major' };
 
-      async function fetchAndRender() {
-        loadingEl.style.display = '';
-        errorEl.style.display = 'none';
-        reportEl.style.display = 'none';
-        tbody.innerHTML = '';
+      let monitors = [];
 
-        const countryFilter = countryInput.value.trim();
-        const slugFilter    = slugInput.value.trim();
-
+      // Fetch data once
+      try {
         const query = `
           query($monitorsFilter2: MonitorFilter) {
             monitors(filter: $monitorsFilter2) {
               nodes {
-                name
                 thirtyDayDetectionDurationSeconds
-                check {
-                  severity {
-                    value
-                  }
-                }
+                check { severity { value } }
                 facilityNames
-                facilities {
-                  nodes { country }
-                }
+                facilities { nodes { country } }
                 softwarePackageSlugs
               }
             }
@@ -118,82 +119,131 @@
           }
         };
 
-        try {
-          const res = await fetch('https://cp-alert-signoff-proxy.onrender.com/lineage', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query, variables })
+        const res = await fetch('https://cp-alert-signoff-proxy.onrender.com/lineage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, variables })
+        });
+        if (!res.ok) throw new Error(`Network error: ${res.status}`);
+        const { data } = await res.json();
+        monitors = data.monitors.nodes;
+
+        populateFilters();
+        renderReport();
+      } catch (err) {
+        console.error(err);
+        loadingEl.style.display = 'none';
+        errorEl.textContent = `Error loading data: ${err.message}`;
+        errorEl.style.display = '';
+      }
+
+      // Populate dropdowns from fetched monitors
+      function populateFilters() {
+        const countries = new Set();
+        const slugs     = new Set();
+
+        monitors.forEach(node => {
+          // collect countries
+          (node.facilities.nodes || []).forEach(f => {
+            if (f.country) countries.add(f.country);
           });
-          if (!res.ok) throw new Error(`Network error: ${res.status}`);
-          const { data } = await res.json();
-
-          // filter by country & slug
-          const filtered = data.monitors.nodes.filter(node => {
-            const countries = (node.facilities.nodes || []).map(f => f.country);
-            const okCountry = !countryFilter || countries.includes(countryFilter);
-            const okSlug    = !slugFilter || node.softwarePackageSlugs.includes(slugFilter);
-            return okCountry && okSlug;
+          // collect slugs
+          (node.softwarePackageSlugs || []).forEach(s => {
+            if (s) slugs.add(s);
           });
+        });
 
-          // group by facilityNames
-          const facilities = {};
-          filtered.forEach(node => {
-            const secs = node.thirtyDayDetectionDurationSeconds;
-            const sev  = String(node.check?.severity?.value || '');
-            const rawNames = node.facilityNames;
-            const namesList = rawNames == null
-              ? []
-              : Array.isArray(rawNames)
-                ? rawNames
-                : [rawNames];
-            namesList.forEach(fac => {
-              if (!fac) return;
-              if (!facilities[fac]) {
-                facilities[fac] = { totalSec: 0, count: 0, severity: {} };
-              }
-              facilities[fac].totalSec += secs;
-              facilities[fac].count    += 1;
-              const label = severityLabels[sev] || sev;
-              facilities[fac].severity[label] = (facilities[fac].severity[label] || 0) + 1;
-            });
+        // fill countrySelect
+        countries.forEach(c => {
+          const opt = document.createElement('option');
+          opt.value = c;
+          opt.textContent = c;
+          countrySelect.appendChild(opt);
+        });
+        // fill slugSelect
+        slugs.forEach(s => {
+          const opt = document.createElement('option');
+          opt.value = s;
+          opt.textContent = s;
+          slugSelect.appendChild(opt);
+        });
+
+        loadingEl.style.display = 'none';
+      }
+
+      // Render report based on current filter selections
+      function renderReport() {
+        tbody.innerHTML = '';
+        reportEl.style.display = 'none';
+        errorEl.style.display = 'none';
+
+        const countryFilter = countrySelect.value;
+        const slugFilter    = slugSelect.value;
+
+        // apply filters
+        const filtered = monitors.filter(node => {
+          const countries = (node.facilities.nodes || []).map(f => f.country);
+          const okCountry = !countryFilter || countries.includes(countryFilter);
+          const okSlug    = !slugFilter    || node.softwarePackageSlugs.includes(slugFilter);
+          return okCountry && okSlug;
+        });
+
+        // group by facilityNames
+        const facilities = {};
+        filtered.forEach(node => {
+          const secs = node.thirtyDayDetectionDurationSeconds;
+          const sev  = String(node.check?.severity?.value || '');
+          const rawNames = node.facilityNames;
+          const namesList = rawNames == null
+            ? []
+            : Array.isArray(rawNames)
+              ? rawNames
+              : [rawNames];
+          namesList.forEach(fac => {
+            if (!fac) return;
+            if (!facilities[fac]) {
+              facilities[fac] = { totalSec: 0, count: 0, severity: {} };
+            }
+            facilities[fac].totalSec += secs;
+            facilities[fac].count    += 1;
+            const label = severityLabels[sev] || sev;
+            facilities[fac].severity[label] = (facilities[fac].severity[label] || 0) + 1;
           });
+        });
 
-          const rows = Object.entries(facilities)
-            .map(([name, stats]) => ({
-              name,
-              totalDays: (stats.totalSec / 86400).toFixed(2),
-              count: stats.count,
-              severity: stats.severity
-            }))
-            .sort((a, b) => b.totalDays - a.totalDays);
+        // sort and render
+        const rows = Object.entries(facilities)
+          .map(([name, stats]) => ({
+            name,
+            totalDays: (stats.totalSec / 86400).toFixed(2),
+            count: stats.count,
+            severity: stats.severity
+          }))
+          .sort((a, b) => b.totalDays - a.totalDays);
 
-          rows.forEach(({ name, totalDays, count, severity }) => {
-            const tr = document.createElement('tr');
-            const sevBreak = Object.entries(severity)
-              .map(([sev, cnt]) => `${sev}: ${cnt}`)
-              .join(', ');
-            tr.innerHTML = `
-              <td>${name}</td>
-              <td>${totalDays}</td>
-              <td>${count}</td>
-              <td>${sevBreak}</td>
-            `;
-            tbody.appendChild(tr);
-          });
+        rows.forEach(({ name, totalDays, count, severity }) => {
+          const tr = document.createElement('tr');
+          const sevBreak = Object.entries(severity)
+            .map(([sev, cnt]) => `${sev}: ${cnt}`)
+            .join(', ');
+          tr.innerHTML = `
+            <td>${name}</td>
+            <td>${totalDays}</td>
+            <td>${count}</td>
+            <td>${sevBreak}</td>
+          `;
+          tbody.appendChild(tr);
+        });
 
-          loadingEl.style.display = 'none';
-          reportEl.style.display  = 'table';
-        } catch (err) {
-          console.error(err);
-          loadingEl.style.display = 'none';
-          errorEl.textContent = `Error loading data: ${err.message}`;
+        if (rows.length === 0) {
+          errorEl.textContent = 'No data matches the selected filters.';
           errorEl.style.display = '';
+        } else {
+          reportEl.style.display = 'table';
         }
       }
 
-      btn.addEventListener('click', fetchAndRender);
-      // initial load
-      fetchAndRender();
+      btn.addEventListener('click', renderReport);
     })();
   </script>
 </body>
