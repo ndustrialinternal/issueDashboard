@@ -7,37 +7,7 @@
     body { font-family: Arial, sans-serif; margin: 1rem; }
     h1 { text-align: center; margin-bottom: 1rem; }
 
-    /* Login form */
-    #login {
-      max-width: 300px;
-      margin: 2rem auto;
-      padding: 1rem;
-      border: 1px solid #ccc;
-      border-radius: 4px;
-    }
-    #login input {
-      width: 100%;
-      padding: 0.5rem;
-      margin: 0.5rem 0;
-      box-sizing: border-box;
-    }
-    #login button {
-      width: 100%;
-      padding: 0.5rem;
-      margin-top: 0.5rem;
-      font-size: 1rem;
-    }
-    #login-error {
-      color: red;
-      text-align: center;
-      display: none;
-      margin-top: 0.5rem;
-    }
-
-    /* Dashboard (hidden until login) */
-    #dashboard { display: none; }
-
-    /* Filters */
+    /* Filters including dynamic organization selector */
     #filters { display: flex; justify-content: center; gap: 1rem; margin-bottom: 1rem; }
     #filters label { display: flex; flex-direction: column; font-size: 0.9rem; }
     #filters select, #filters button { margin-top: 0.5rem; padding: 0.4rem; font-size: 1rem; }
@@ -46,7 +16,7 @@
     .loading, .error { text-align: center; margin-top: 2rem; }
     .error { color: red; }
 
-    /* Main table */
+    /* Main report table */
     table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
     th, td { border: 1px solid #ccc; padding: 0.5rem; }
     th { background: #f0f0f0; text-align: left; }
@@ -76,51 +46,39 @@
 <body>
   <h1>Issue Detection Dashboard</h1>
 
-  <!-- LOGIN FORM -->
-  <div id="login">
-    <h2>Please Log In</h2>
-    <input type="text" id="username" placeholder="Username" autocomplete="username">
-    <input type="password" id="password" placeholder="Password" autocomplete="current-password">
-    <button id="login-button">Log In</button>
-    <div id="login-error">Invalid credentials</div>
+  <!-- Filters including dynamic organization selector -->
+  <div id="filters">
+    <label>
+      Organization
+      <select id="org-select"></select>
+    </label>
+    <label>
+      Country
+      <select id="country-filter"><option value="">All</option></select>
+    </label>
+    <label>
+      Software Package
+      <select id="slug-filter"><option value="">All</option></select>
+    </label>
+    <button id="apply-filters">Apply Filters</button>
   </div>
 
-  <!-- DASHBOARD -->
-  <div id="dashboard">
-    <!-- Filters including dynamic organization selector -->
-    <div id="filters">
-      <label>
-        Organization
-        <select id="org-select"></select>
-      </label>
-      <label>
-        Country
-        <select id="country-filter"><option value="">All</option></select>
-      </label>
-      <label>
-        Software Package
-        <select id="slug-filter"><option value="">All</option></select>
-      </label>
-      <button id="apply-filters">Apply Filters</button>
-    </div>
+  <!-- Status messages -->
+  <div id="loading" class="loading">Loading data…</div>
+  <div id="error" class="error" style="display:none;"></div>
 
-    <!-- Status messages -->
-    <div id="loading" class="loading">Loading data…</div>
-    <div id="error" class="error" style="display:none;"></div>
-
-    <!-- Main report table -->
-    <table id="report" style="display:none;">
-      <thead>
-        <tr>
-          <th>Facility</th>
-          <th>Sum of Detections Duration (days)</th>
-          <th>Triggered Monitor Count</th>
-          <th>Severity Breakdown</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </div>
+  <!-- Main report table -->
+  <table id="report" style="display:none;">
+    <thead>
+      <tr>
+        <th>Facility</th>
+        <th>Sum of Detections Duration (days)</th>
+        <th>Triggered Monitor Count</th>
+        <th>Severity Breakdown</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
 
   <!-- Modal for facility detail -->
   <div id="modal-overlay">
@@ -144,38 +102,7 @@
 
   <script>
   (function(){
-    // --- CREDENTIALS & AUTH STATE ---
-    let basicAuth = '';
-
-    // --- DOM REFS ---
-    const loginDiv  = document.getElementById('login');
-    const dashDiv   = document.getElementById('dashboard');
-    const userIn    = document.getElementById('username');
-    const passIn    = document.getElementById('password');
-    const loginBtn  = document.getElementById('login-button');
-    const loginErr  = document.getElementById('login-error');
-
-    const orgSelect     = document.getElementById('org-select');
-    const countrySelect = document.getElementById('country-filter');
-    const slugSelect    = document.getElementById('slug-filter');
-    const applyBtn      = document.getElementById('apply-filters');
-    const loadingEl     = document.getElementById('loading');
-    const errorEl       = document.getElementById('error');
-    const reportEl      = document.getElementById('report');
-    const tbody         = reportEl.querySelector('tbody');
-
-    const modalOverlay = document.getElementById('modal-overlay');
-    const modalClose   = document.getElementById('modal-close');
-    const modalTitle   = document.getElementById('modal-title');
-    const modalLoad    = document.getElementById('modal-loading');
-    const modalErr     = document.getElementById('modal-error');
-    const modalTable   = document.getElementById('modal-table');
-    const modalTbody   = modalTable.querySelector('tbody');
-
-    const severityLabels = { '1':'minor', '2':'major', 'unknown':'unknown' };
-    let monitors = [];
-
-    // --- ORG URLS ---
+    // 1) Map organization names to proxy endpoints
     const ORG_URLS = {
       "Lineage":   "https://cp-alert-signoff-proxy.onrender.com/lineage",
       "Demo":      "https://cp-alert-signoff-proxy.onrender.com/graphql",
@@ -186,40 +113,41 @@
       "WL Gore":   "https://cp-alert-signoff-proxy.onrender.com/wlgore"
     };
 
-    // --- LOGIN HANDLER ---
-    loginBtn.addEventListener('click', async () => {
-      basicAuth = 'Basic ' + btoa(userIn.value.trim() + ':' + passIn.value);
-      try {
-        const res = await fetch('https://cp-alert-signoff-proxy.onrender.com/login', {
-          headers: { 'Authorization': basicAuth }
-        });
-        if (!res.ok) throw new Error();
-        // on success, hide login, show dashboard
-        loginDiv.style.display = 'none';
-        dashDiv.style.display  = 'block';
-        initDashboard();
-      } catch {
-        loginErr.style.display = '';
-      }
+    // DOM references
+    const orgSelect     = document.getElementById('org-select');
+    const countrySelect = document.getElementById('country-filter');
+    const slugSelect    = document.getElementById('slug-filter');
+    const applyBtn      = document.getElementById('apply-filters');
+    const loadingEl     = document.getElementById('loading');
+    const errorEl       = document.getElementById('error');
+    const reportEl      = document.getElementById('report');
+    const tbody         = reportEl.querySelector('tbody');
+
+    const modalOverlay  = document.getElementById('modal-overlay');
+    const modalClose    = document.getElementById('modal-close');
+    const modalTitle    = document.getElementById('modal-title');
+    const modalLoad     = document.getElementById('modal-loading');
+    const modalErr      = document.getElementById('modal-error');
+    const modalTable    = document.getElementById('modal-table');
+    const modalTbody    = modalTable.querySelector('tbody');
+
+    const severityLabels = { '1':'minor', '2':'major', 'unknown':'unknown' };
+    let monitors = [];
+
+    // Populate organization dropdown
+    Object.keys(ORG_URLS).forEach(function(org){
+      orgSelect.appendChild(new Option(org, org));
     });
 
-    // --- INITIALIZE DASHBOARD AFTER LOGIN ---
-    function initDashboard() {
-      // populate organization selector
-      Object.keys(ORG_URLS).forEach(org => {
-        orgSelect.appendChild(new Option(org, org));
-      });
-      // wire up controls
-      orgSelect.addEventListener('change', fetchMonitors);
-      applyBtn.addEventListener('click', renderReport);
-      modalClose.addEventListener('click', () => {
-        modalOverlay.style.display = 'none';
-      });
-      // first fetch
-      fetchMonitors();
-    }
+    // Fetch data when organization changes or on initial load
+    orgSelect.addEventListener('change', fetchMonitors);
+    applyBtn.addEventListener('click', renderReport);
+    modalClose.addEventListener('click', ()=> modalOverlay.style.display='none');
 
-    // --- FETCH MONITORS FOR SELECTED ORG ---
+    // Initial load
+    fetchMonitors();
+
+    // Fetch monitors from selected org
     async function fetchMonitors(){
       loadingEl.style.display = '';
       errorEl.style.display   = 'none';
@@ -252,15 +180,13 @@
       try {
         const res = await fetch(url, {
           method: 'POST',
-          headers:{
-            'Content-Type': 'application/json',
-            'Authorization': basicAuth
-          },
+          headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ query: query, variables: variables })
         });
-        if (!res.ok) throw new Error('Status ' + res.status);
+        if(!res.ok) throw new Error('Status ' + res.status);
         const json = await res.json();
         monitors = json.data.monitors.nodes;
+
         populateFilters();
         renderReport();
       } catch(err){
@@ -270,74 +196,74 @@
       }
     }
 
-    // --- POPULATE COUNTRY & SLUG FILTERS ---
+    // Build country & slug filters
     function populateFilters(){
       const countries = new Set(), slugs = new Set();
-      monitors.forEach(n => {
-        (n.facilities.nodes || []).forEach(f => f.country && countries.add(f.country));
-        (n.softwarePackageSlugs || []).forEach(s => s && slugs.add(s));
+      monitors.forEach(function(n){
+        (n.facilities.nodes||[]).forEach(f=>f.country && countries.add(f.country));
+        (n.softwarePackageSlugs||[]).forEach(s=>s && slugs.add(s));
       });
       countries.forEach(c => countrySelect.appendChild(new Option(c,c)));
       slugs.forEach(s => slugSelect.appendChild(new Option(s,s)));
       loadingEl.style.display = 'none';
     }
 
-    // --- RENDER MAIN REPORT TABLE ---
+    // Render main report table
     function renderReport(){
       tbody.innerHTML   = '';
       errorEl.style.display = 'none';
       reportEl.style.display = 'none';
 
       const cf = countrySelect.value, sf = slugSelect.value;
-      const filtered = monitors.filter(n => {
+      const filtered = monitors.filter(function(n){
         const countries = (n.facilities.nodes||[]).map(f=>f.country);
-        return (!cf || countries.includes(cf))
-            && (!sf || n.softwarePackageSlugs.includes(sf));
+        return (!cf||countries.includes(cf)) &&
+               (!sf||n.softwarePackageSlugs.includes(sf));
       });
 
       const facMap = {};
-      filtered.forEach(n => {
+      filtered.forEach(function(n){
         const secs = n.thirtyDayDetectionDurationSeconds;
         const sevRaw = n.check?.severity?.value ?? 'unknown';
         const sevKey = String(sevRaw);
-        const names = n.facilityNames == null
+        const names = n.facilityNames==null
           ? [] : Array.isArray(n.facilityNames)
           ? n.facilityNames : [n.facilityNames];
-        names.forEach(fac => {
-          if (!fac) return;
-          if (!facMap[fac]) facMap[fac] = { totalSec:0, count:0, severity:{}, monitors:[] };
+        names.forEach(function(fac){
+          if(!fac) return;
+          if(!facMap[fac]) facMap[fac] = { totalSec:0,count:0,severity:{},monitors:[] };
           facMap[fac].totalSec += secs;
           facMap[fac].count++;
           facMap[fac].monitors.push(n);
-          const label = severityLabels[sevKey] || 'unknown';
-          facMap[fac].severity[label] = (facMap[fac].severity[label]||0) + 1;
+          const label = severityLabels[sevKey]||'unknown';
+          facMap[fac].severity[label] = (facMap[fac].severity[label]||0)+1;
         });
       });
 
-      const rows = Object.entries(facMap).map(([name,st]) => ({
-        name,
-        totalDays: (st.totalSec/86400).toFixed(2),
-        count: st.count,
-        severity: st.severity,
-        monitors: st.monitors
-      })).sort((a,b) => b.totalDays - a.totalDays);
+      const rows = Object.entries(facMap).map(function([name,st]){
+        return {
+          name,
+          totalDays: (st.totalSec/86400).toFixed(2),
+          count: st.count,
+          severity: st.severity,
+          monitors: st.monitors
+        };
+      }).sort((a,b)=>b.totalDays - a.totalDays);
 
-      if (!rows.length) {
+      if(!rows.length){
         errorEl.textContent = 'No data matches the selected filters.';
         errorEl.style.display = '';
         return;
       }
 
-      rows.forEach(r => {
+      rows.forEach(function(r){
         const tr = document.createElement('tr');
         tr.innerHTML = 
-          '<td><a class="facility-link">' + r.name + '</a></td>' +
-          '<td>' + r.totalDays + '</td>' +
-          '<td>' + r.count + '</td>' +
-          '<td>' + Object.entries(r.severity)
-                       .map(([s,c]) => s + ': ' + c)
-                       .join(', ') + '</td>';
-        tr.querySelector('.facility-link').addEventListener('click', () => {
+          '<td><a class="facility-link">'+r.name+'</a></td>'+
+          '<td>'+r.totalDays+'</td>'+
+          '<td>'+r.count+'</td>'+
+          '<td>'+Object.entries(r.severity).map(function(p){return p[0]+': '+p[1];}).join(', ')+'</td>';
+        tr.querySelector('.facility-link').addEventListener('click',function(){
           openModal(r.name, r.monitors);
         });
         tbody.appendChild(tr);
@@ -346,30 +272,30 @@
       reportEl.style.display = 'table';
     }
 
-    // --- MODAL FOR PER-CHECK BREAKDOWN ---
+    // Modal for per-check breakdown
     function openModal(name, monList){
       modalTitle.textContent = name;
-      modalTbody.innerHTML = '';
+      modalTbody.innerHTML   = '';
       modalErr.style.display = 'none';
       modalTable.style.display = 'none';
-      modalLoad.style.display = '';
+      modalLoad.style.display  = '';
       modalOverlay.style.display = 'flex';
 
       const map = {};
-      monList.forEach(n => {
+      monList.forEach(function(n){
         const chk = n.check?.name ?? 'UNKNOWN';
         const secs = n.thirtyDayDetectionDurationSeconds || 0;
-        if (!map[chk]) map[chk] = { totalSec:0, count:0 };
+        if(!map[chk]) map[chk] = { totalSec:0, count:0 };
         map[chk].totalSec += secs;
         map[chk].count++;
       });
 
-      Object.entries(map).forEach(([chk,st]) => {
+      Object.entries(map).forEach(function([chk,st]){
         const tr = document.createElement('tr');
         tr.innerHTML =
-          '<td>' + chk + '</td>' +
-          '<td>' + (st.totalSec/86400).toFixed(2) + '</td>' +
-          '<td>' + st.count + '</td>';
+          '<td>'+chk+'</td>'+
+          '<td>'+(st.totalSec/86400).toFixed(2)+'</td>'+
+          '<td>'+st.count+'</td>';
         modalTbody.appendChild(tr);
       });
 
