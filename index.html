@@ -16,13 +16,13 @@
     .loading, .error { text-align: center; margin-top: 2rem; }
     .error { color: red; }
 
-    /* Data table */
+    /* Main table */
     table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
     th, td { border: 1px solid #ccc; padding: 0.5rem; }
     th { background: #f0f0f0; text-align: left; }
     td a.facility-link { color: #007bff; cursor: pointer; text-decoration: underline; }
 
-    /* Modal overlay */
+    /* Modal */
     #modal-overlay {
       display: none;
       position: fixed; top: 0; left: 0;
@@ -35,10 +35,8 @@
       background: #fff;
       padding: 1rem;
       border-radius: 4px;
-      max-width: 500px;
-      width: 90%;
-      max-height: 80vh;
-      overflow-y: auto;
+      max-width: 500px; width: 90%;
+      max-height: 80vh; overflow-y: auto;
     }
     #modal h2 { margin-top: 0; }
     #modal table { width: 100%; margin-top: 0.5rem; }
@@ -48,6 +46,7 @@
 <body>
   <h1>Detection Duration Dashboard</h1>
 
+  <!-- Filters -->
   <div id="filters">
     <label>
       Country
@@ -60,9 +59,11 @@
     <button id="apply-filters">Apply Filters</button>
   </div>
 
+  <!-- Status -->
   <div id="loading" class="loading">Loading data…</div>
   <div id="error" class="error" style="display:none;"></div>
 
+  <!-- Report -->
   <table id="report" style="display:none;">
     <thead>
       <tr>
@@ -75,6 +76,7 @@
     <tbody></tbody>
   </table>
 
+  <!-- Modal -->
   <div id="modal-overlay">
     <div id="modal">
       <button id="modal-close">&times;</button>
@@ -96,6 +98,7 @@
 
   <script>
   (function(){
+    // DOM refs
     const countrySelect = document.getElementById('country-filter');
     const slugSelect    = document.getElementById('slug-filter');
     const applyBtn      = document.getElementById('apply-filters');
@@ -112,10 +115,11 @@
     const modalTable    = document.getElementById('modal-table');
     const modalTbody    = modalTable.querySelector('tbody');
 
-    const severityLabels = { '1': 'minor', '2': 'major' };
+    // Map raw severity values to labels; 'unknown' fallback
+    const severityLabels = { '1': 'minor', '2': 'major', 'unknown': 'unknown' };
     let monitors = [];
 
-    // Initial fetch
+    // 1) Initial fetch of monitors
     (async function(){
       try {
         const query = "\
@@ -155,12 +159,15 @@
       }
     })();
 
+    // 2) Build filter dropdowns
     function populateFilters(){
       const countries = new Set(), slugs = new Set();
       monitors.forEach(function(n){
+        // Collect country from each facility
         (n.facilities.nodes || []).forEach(function(f){
           if (f.country) countries.add(f.country);
         });
+        // Collect software slugs
         (n.softwarePackageSlugs || []).forEach(function(s){
           if (s) slugs.add(s);
         });
@@ -171,27 +178,36 @@
       slugs.forEach(function(s){
         slugSelect.appendChild(new Option(s, s));
       });
+      // Hide loading spinner once filters ready
       loadingEl.style.display = 'none';
     }
 
+    // 3) Re-render on filter change
     applyBtn.addEventListener('click', renderReport);
 
+    // 4) Main rendering of the report table
     function renderReport(){
+      // clear previous
       tbody.innerHTML = '';
       errorEl.style.display = 'none';
       reportEl.style.display = 'none';
 
       const cf = countrySelect.value, sf = slugSelect.value;
+      // filter monitors by country & slug
       const filtered = monitors.filter(function(n){
         const countries = (n.facilities.nodes || []).map(function(f){ return f.country; });
         return (!cf || countries.includes(cf)) &&
                (!sf || n.softwarePackageSlugs.includes(sf));
       });
 
+      // group by facility name
       const facMap = {};
       filtered.forEach(function(n){
         const secs = n.thirtyDayDetectionDurationSeconds;
-        const sevVal = String(n.check.severity.value);
+        // Safely read severity: default to 'unknown'
+        const rawSeverity = n.check?.severity?.value ?? 'unknown';
+        const sevKey = String(rawSeverity);
+        // Wrap facilityNames as array
         const names = n.facilityNames == null
           ? []
           : Array.isArray(n.facilityNames)
@@ -199,15 +215,18 @@
             : [n.facilityNames];
         names.forEach(function(fac){
           if (!fac) return;
-          if (!facMap[fac]) facMap[fac] = { totalSec: 0, count: 0, severity: {}, monitors: [] };
+          if (!facMap[fac]) {
+            facMap[fac] = { totalSec: 0, count: 0, severity: {}, monitors: [] };
+          }
           facMap[fac].totalSec += secs;
           facMap[fac].count++;
           facMap[fac].monitors.push(n);
-          const label = severityLabels[sevVal] || sevVal;
+          const label = severityLabels[sevKey] || 'unknown';
           facMap[fac].severity[label] = (facMap[fac].severity[label] || 0) + 1;
         });
       });
 
+      // convert to sorted array
       const rows = Object.entries(facMap).map(function(entry){
         const name = entry[0], st = entry[1];
         return {
@@ -222,11 +241,12 @@
       });
 
       if (!rows.length) {
-        errorEl.textContent = 'No data for those filters.';
+        errorEl.textContent = 'No data matches the selected filters.';
         errorEl.style.display = '';
         return;
       }
 
+      // populate table rows and attach modal handlers
       rows.forEach(function(r){
         const tr = document.createElement('tr');
         tr.innerHTML =
@@ -245,6 +265,7 @@
       reportEl.style.display = 'table';
     }
 
+    // 5) Modal logic: show breakdown by check name
     function openModal(name, monList){
       modalTitle.textContent = name;
       modalTbody.innerHTML = '';
@@ -253,6 +274,7 @@
       modalLoad.style.display = '';
       modalOverlay.style.display = 'flex';
 
+      // group by check.name
       const map = {};
       monList.forEach(function(n){
         const chk = n.check.name;
@@ -262,6 +284,7 @@
         map[chk].count++;
       });
 
+      // populate modal table
       Object.entries(map).forEach(function(entry){
         const chk = entry[0], st = entry[1];
         const tr = document.createElement('tr');
@@ -276,6 +299,7 @@
       modalTable.style.display = 'table';
     }
 
+    // close modal
     document.getElementById('modal-close').addEventListener('click', function(){
       document.getElementById('modal-overlay').style.display = 'none';
     });
