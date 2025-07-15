@@ -59,6 +59,11 @@
       const reportEl  = document.getElementById('report');
       const tbody     = reportEl.querySelector('tbody');
 
+      // --- YOUR FILTERS ---
+      const COUNTRY_FILTER      = 'USA';
+      const SOFTWARE_SLUG_FILTER = 'nsight_electrical';
+      // ----------------------
+
       const query = `
         query($monitorsFilter2: MonitorFilter) {
           monitors(filter: $monitorsFilter2) {
@@ -71,6 +76,12 @@
                 }
               }
               facilityNames
+              facilities {
+                nodes {
+                  country
+                }
+              }
+              softwarePackageSlugs
             }
           }
         }`;
@@ -90,18 +101,24 @@
         if (!res.ok) throw new Error(`Network error: ${res.status}`);
         const { data } = await res.json();
 
-        const facilities = {};
-        data.monitors.nodes.forEach(node => {
-          const { thirtyDayDetectionDurationSeconds, check, facilityNames } = node;
+        // 1) Filter out nodes by facility country & software slug
+        const filtered = data.monitors.nodes.filter(node => {
+          const countries = (node.facilities.nodes || []).map(f => f.country);
+          const hasCountry = countries.includes(COUNTRY_FILTER);
+          const hasSlug    = node.softwarePackageSlugs.includes(SOFTWARE_SLUG_FILTER);
+          return hasCountry && hasSlug;
+        });
 
-          // Wrap whatever facilityNames is into an array, without splitting commas
+        // 2) Group by facility
+        const facilities = {};
+        filtered.forEach(node => {
+          const { thirtyDayDetectionDurationSeconds, check, facilityNames } = node;
           const rawNames = facilityNames;
           const namesList = rawNames == null
             ? []
             : Array.isArray(rawNames)
               ? rawNames
               : [rawNames];
-
           namesList.forEach(fac => {
             if (!fac) return;
             if (!facilities[fac]) {
@@ -114,6 +131,7 @@
           });
         });
 
+        // 3) Build sorted rows
         const rows = Object.entries(facilities)
           .map(([name, stats]) => ({
             name,
@@ -123,6 +141,7 @@
           }))
           .sort((a, b) => b.totalDays - a.totalDays);
 
+        // 4) Render table
         rows.forEach(({ name, totalDays, count, severity }) => {
           const tr = document.createElement('tr');
           const sevBreak = Object.entries(severity)
