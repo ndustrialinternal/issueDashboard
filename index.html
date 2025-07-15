@@ -2,10 +2,40 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Detection Duration Dashboard</title>
+  <title>Issue Detection Dashboard</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 1rem; }
     h1 { text-align: center; margin-bottom: 1rem; }
+
+    /* Login form */
+    #login {
+      max-width: 300px;
+      margin: 2rem auto;
+      padding: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    #login input {
+      width: 100%;
+      padding: 0.5rem;
+      margin: 0.5rem 0;
+      box-sizing: border-box;
+    }
+    #login button {
+      width: 100%;
+      padding: 0.5rem;
+      margin-top: 0.5rem;
+      font-size: 1rem;
+    }
+    #login-error {
+      color: red;
+      text-align: center;
+      display: none;
+      margin-top: 0.5rem;
+    }
+
+    /* Dashboard (hidden until login) */
+    #dashboard { display: none; }
 
     /* Filters */
     #filters { display: flex; justify-content: center; gap: 1rem; margin-bottom: 1rem; }
@@ -46,39 +76,51 @@
 <body>
   <h1>Issue Detection Dashboard</h1>
 
-  <!-- Filters including dynamic organization selector -->
-  <div id="filters">
-    <label>
-      Organization
-      <select id="org-select"></select>
-    </label>
-    <label>
-      Country
-      <select id="country-filter"><option value="">All</option></select>
-    </label>
-    <label>
-      Software Package
-      <select id="slug-filter"><option value="">All</option></select>
-    </label>
-    <button id="apply-filters">Apply Filters</button>
+  <!-- LOGIN FORM -->
+  <div id="login">
+    <h2>Please Log In</h2>
+    <input type="text" id="username" placeholder="Username" autocomplete="username">
+    <input type="password" id="password" placeholder="Password" autocomplete="current-password">
+    <button id="login-button">Log In</button>
+    <div id="login-error">Invalid credentials</div>
   </div>
 
-  <!-- Status messages -->
-  <div id="loading" class="loading">Loading data…</div>
-  <div id="error" class="error" style="display:none;"></div>
+  <!-- DASHBOARD -->
+  <div id="dashboard">
+    <!-- Filters including dynamic organization selector -->
+    <div id="filters">
+      <label>
+        Organization
+        <select id="org-select"></select>
+      </label>
+      <label>
+        Country
+        <select id="country-filter"><option value="">All</option></select>
+      </label>
+      <label>
+        Software Package
+        <select id="slug-filter"><option value="">All</option></select>
+      </label>
+      <button id="apply-filters">Apply Filters</button>
+    </div>
 
-  <!-- Main report table -->
-  <table id="report" style="display:none;">
-    <thead>
-      <tr>
-        <th>Facility</th>
-        <th>Sum of Detections Duration (days)</th>
-        <th>Triggered Monitor Count</th>
-        <th>Severity Breakdown</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  </table>
+    <!-- Status messages -->
+    <div id="loading" class="loading">Loading data…</div>
+    <div id="error" class="error" style="display:none;"></div>
+
+    <!-- Main report table -->
+    <table id="report" style="display:none;">
+      <thead>
+        <tr>
+          <th>Facility</th>
+          <th>Sum of Detections Duration (days)</th>
+          <th>Triggered Monitor Count</th>
+          <th>Severity Breakdown</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
 
   <!-- Modal for facility detail -->
   <div id="modal-overlay">
@@ -102,19 +144,17 @@
 
   <script>
   (function(){
-    // 1) Map organization names to proxy endpoints
-    const ORG_URLS = {
-      "Lineage": "https://cp-alert-signoff-proxy.onrender.com/lineage",
-      "Demo":    "https://cp-alert-signoff-proxy.onrender.com/graphql",
-      "Emergent": "https://cp-alert-signoff-proxy.onrender.com/emergent",
-      "Americold": "https://cp-alert-signoff-proxy.onrender.com/americold",
-      "US Cold": "https://cp-alert-signoff-proxy.onrender.com/uscold",
-      "Envision": "https://cp-alert-signoff-proxy.onrender.com/envision",
-      "WL Gore": "https://cp-alert-signoff-proxy.onrender.com/wlgore"
-      // add more orgs here
-    };
+    // --- CREDENTIALS & AUTH STATE ---
+    let basicAuth = '';
 
-    // DOM references
+    // --- DOM REFS ---
+    const loginDiv  = document.getElementById('login');
+    const dashDiv   = document.getElementById('dashboard');
+    const userIn    = document.getElementById('username');
+    const passIn    = document.getElementById('password');
+    const loginBtn  = document.getElementById('login-button');
+    const loginErr  = document.getElementById('login-error');
+
     const orgSelect     = document.getElementById('org-select');
     const countrySelect = document.getElementById('country-filter');
     const slugSelect    = document.getElementById('slug-filter');
@@ -124,33 +164,62 @@
     const reportEl      = document.getElementById('report');
     const tbody         = reportEl.querySelector('tbody');
 
-    const modalOverlay  = document.getElementById('modal-overlay');
-    const modalClose    = document.getElementById('modal-close');
-    const modalTitle    = document.getElementById('modal-title');
-    const modalLoad     = document.getElementById('modal-loading');
-    const modalErr      = document.getElementById('modal-error');
-    const modalTable    = document.getElementById('modal-table');
-    const modalTbody    = modalTable.querySelector('tbody');
+    const modalOverlay = document.getElementById('modal-overlay');
+    const modalClose   = document.getElementById('modal-close');
+    const modalTitle   = document.getElementById('modal-title');
+    const modalLoad    = document.getElementById('modal-loading');
+    const modalErr     = document.getElementById('modal-error');
+    const modalTable   = document.getElementById('modal-table');
+    const modalTbody   = modalTable.querySelector('tbody');
 
     const severityLabels = { '1':'minor', '2':'major', 'unknown':'unknown' };
     let monitors = [];
 
-    // Populate organization dropdown
-    Object.keys(ORG_URLS).forEach(function(org){
-      orgSelect.appendChild(new Option(org, org));
+    // --- ORG URLS ---
+    const ORG_URLS = {
+      "Lineage":   "https://cp-alert-signoff-proxy.onrender.com/lineage",
+      "Demo":      "https://cp-alert-signoff-proxy.onrender.com/graphql",
+      "Emergent":  "https://cp-alert-signoff-proxy.onrender.com/emergent",
+      "Americold": "https://cp-alert-signoff-proxy.onrender.com/americold",
+      "US Cold":   "https://cp-alert-signoff-proxy.onrender.com/uscold",
+      "Envision":  "https://cp-alert-signoff-proxy.onrender.com/envision",
+      "WL Gore":   "https://cp-alert-signoff-proxy.onrender.com/wlgore"
+    };
+
+    // --- LOGIN HANDLER ---
+    loginBtn.addEventListener('click', async () => {
+      basicAuth = 'Basic ' + btoa(userIn.value.trim() + ':' + passIn.value);
+      try {
+        const res = await fetch('https://cp-alert-signoff-proxy.onrender.com/login', {
+          headers: { 'Authorization': basicAuth }
+        });
+        if (!res.ok) throw new Error();
+        // on success, hide login, show dashboard
+        loginDiv.style.display = 'none';
+        dashDiv.style.display  = '';
+        initDashboard();
+      } catch {
+        loginErr.style.display = '';
+      }
     });
 
-    // Fetch data whenever organization changes
-    orgSelect.addEventListener('change', fetchMonitors);
-    // Also apply filters on button
-    applyBtn.addEventListener('click', renderReport);
-    // Close modal
-    modalClose.addEventListener('click', ()=> modalOverlay.style.display='none');
+    // --- INITIALIZE DASHBOARD AFTER LOGIN ---
+    function initDashboard() {
+      // populate organization selector
+      Object.keys(ORG_URLS).forEach(org => {
+        orgSelect.appendChild(new Option(org, org));
+      });
+      // wire up controls
+      orgSelect.addEventListener('change', fetchMonitors);
+      applyBtn.addEventListener('click', renderReport);
+      modalClose.addEventListener('click', () => {
+        modalOverlay.style.display = 'none';
+      });
+      // first fetch
+      fetchMonitors();
+    }
 
-    // Initial load using first org
-    fetchMonitors();
-
-    // --- Fetch monitors from selected org URL ---
+    // --- FETCH MONITORS FOR SELECTED ORG ---
     async function fetchMonitors(){
       loadingEl.style.display = '';
       errorEl.style.display   = 'none';
@@ -183,13 +252,15 @@
       try {
         const res = await fetch(url, {
           method: 'POST',
-          headers:{'Content-Type':'application/json'},
+          headers:{
+            'Content-Type': 'application/json',
+            'Authorization': basicAuth
+          },
           body: JSON.stringify({ query: query, variables: variables })
         });
-        if(!res.ok) throw new Error('Status ' + res.status);
+        if (!res.ok) throw new Error('Status ' + res.status);
         const json = await res.json();
         monitors = json.data.monitors.nodes;
-
         populateFilters();
         renderReport();
       } catch(err){
@@ -199,75 +270,74 @@
       }
     }
 
-    // --- Build country & slug filters from fetched data ---
+    // --- POPULATE COUNTRY & SLUG FILTERS ---
     function populateFilters(){
       const countries = new Set(), slugs = new Set();
-      monitors.forEach(function(n){
-        (n.facilities.nodes||[]).forEach(f=>f.country && countries.add(f.country));
-        (n.softwarePackageSlugs||[]).forEach(s=>s && slugs.add(s));
+      monitors.forEach(n => {
+        (n.facilities.nodes || []).forEach(f => f.country && countries.add(f.country));
+        (n.softwarePackageSlugs || []).forEach(s => s && slugs.add(s));
       });
       countries.forEach(c => countrySelect.appendChild(new Option(c,c)));
       slugs.forEach(s => slugSelect.appendChild(new Option(s,s)));
       loadingEl.style.display = 'none';
     }
 
-    // --- Render main report table based on filters ---
+    // --- RENDER MAIN REPORT TABLE ---
     function renderReport(){
       tbody.innerHTML   = '';
       errorEl.style.display = 'none';
       reportEl.style.display = 'none';
 
       const cf = countrySelect.value, sf = slugSelect.value;
-      const filtered = monitors.filter(function(n){
+      const filtered = monitors.filter(n => {
         const countries = (n.facilities.nodes||[]).map(f=>f.country);
-        return (!cf||countries.includes(cf)) &&
-               (!sf||n.softwarePackageSlugs.includes(sf));
+        return (!cf || countries.includes(cf))
+            && (!sf || n.softwarePackageSlugs.includes(sf));
       });
 
       const facMap = {};
-      filtered.forEach(function(n){
+      filtered.forEach(n => {
         const secs = n.thirtyDayDetectionDurationSeconds;
         const sevRaw = n.check?.severity?.value ?? 'unknown';
         const sevKey = String(sevRaw);
-        const names = n.facilityNames==null
+        const names = n.facilityNames == null
           ? [] : Array.isArray(n.facilityNames)
           ? n.facilityNames : [n.facilityNames];
-        names.forEach(function(fac){
-          if(!fac) return;
-          if(!facMap[fac]) facMap[fac] = { totalSec:0,count:0,severity:{},monitors:[] };
+        names.forEach(fac => {
+          if (!fac) return;
+          if (!facMap[fac]) facMap[fac] = { totalSec:0, count:0, severity:{}, monitors:[] };
           facMap[fac].totalSec += secs;
           facMap[fac].count++;
           facMap[fac].monitors.push(n);
-          const label = severityLabels[sevKey]||'unknown';
-          facMap[fac].severity[label] = (facMap[fac].severity[label]||0)+1;
+          const label = severityLabels[sevKey] || 'unknown';
+          facMap[fac].severity[label] = (facMap[fac].severity[label]||0) + 1;
         });
       });
 
-      const rows = Object.entries(facMap).map(function(entry){
-        const name=entry[0], st=entry[1];
-        return {
-          name: name,
-          totalDays: (st.totalSec/86400).toFixed(2),
-          count: st.count,
-          severity: st.severity,
-          monitors: st.monitors
-        };
-      }).sort(function(a,b){ return b.totalDays - a.totalDays; });
+      const rows = Object.entries(facMap).map(([name,st]) => ({
+        name,
+        totalDays: (st.totalSec/86400).toFixed(2),
+        count: st.count,
+        severity: st.severity,
+        monitors: st.monitors
+      })).sort((a,b) => b.totalDays - a.totalDays);
 
-      if(!rows.length){
+      if (!rows.length) {
         errorEl.textContent = 'No data matches the selected filters.';
         errorEl.style.display = '';
         return;
       }
 
-      rows.forEach(function(r){
+      rows.forEach(r => {
         const tr = document.createElement('tr');
         tr.innerHTML = 
-          '<td><a class="facility-link">'+r.name+'</a></td>'+
-          '<td>'+r.totalDays+'</td>'+
-          '<td>'+r.count+'</td>'+
-          '<td>'+Object.entries(r.severity).map(function(p){return p[0]+': '+p[1];}).join(', ')+'</td>';
-        tr.querySelector('.facility-link').addEventListener('click', function(){
+          '<td><a class="facility-link">' + r.name + '</a></td>' +
+          '<td>' + r.totalDays + '</td>' +
+          '<td>' + r.count + '</td>' +
+          '<td>' + Object.entries(r.severity)
+                       .map(([s,c]) => s + ': ' + c)
+                       .join(', ') + '</td>';
+        tr.querySelector('.facility-link').addEventListener('click', () => {
           openModal(r.name, r.monitors);
         });
         tbody.appendChild(tr);
@@ -276,44 +346,36 @@
       reportEl.style.display = 'table';
     }
 
-    // --- Modal for per-check breakdown ---
-  function openModal(name, monList){
-  // Set modal title & reset contents
-  modalTitle.textContent = name;
-  modalTbody.innerHTML   = '';
-  modalErr.style.display = 'none';
-  modalTable.style.display = 'none';
-  modalLoad.style.display  = '';
-  modalOverlay.style.display = 'flex';
+    // --- MODAL FOR PER-CHECK BREAKDOWN ---
+    function openModal(name, monList){
+      modalTitle.textContent = name;
+      modalTbody.innerHTML = '';
+      modalErr.style.display = 'none';
+      modalTable.style.display = 'none';
+      modalLoad.style.display = '';
+      modalOverlay.style.display = 'flex';
 
-  // Build a map of check‑name → { totalSec, count }
-  const map = {};
-  monList.forEach(function(n){
-    // Safely grab the check name (fallback to "UNKNOWN" if missing)
-    const chk = n.check?.name ?? 'UNKNOWN';
-    const secs = n.thirtyDayDetectionDurationSeconds || 0;
+      const map = {};
+      monList.forEach(n => {
+        const chk = n.check?.name ?? 'UNKNOWN';
+        const secs = n.thirtyDayDetectionDurationSeconds || 0;
+        if (!map[chk]) map[chk] = { totalSec:0, count:0 };
+        map[chk].totalSec += secs;
+        map[chk].count++;
+      });
 
-    if (!map[chk]) {
-      map[chk] = { totalSec: 0, count: 0 };
+      Object.entries(map).forEach(([chk,st]) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td>' + chk + '</td>' +
+          '<td>' + (st.totalSec/86400).toFixed(2) + '</td>' +
+          '<td>' + st.count + '</td>';
+        modalTbody.appendChild(tr);
+      });
+
+      modalLoad.style.display  = 'none';
+      modalTable.style.display = 'table';
     }
-    map[chk].totalSec += secs;
-    map[chk].count++;
-  });
-
-  // Render rows into the modal table
-  Object.entries(map).forEach(function([chk, st]){
-    const tr = document.createElement('tr');
-    tr.innerHTML =
-      '<td>' + chk + '</td>' +
-      '<td>' + (st.totalSec / 86400).toFixed(2) + '</td>' +
-      '<td>' + st.count + '</td>';
-    modalTbody.appendChild(tr);
-  });
-
-  // Show the table & hide the spinner
-  modalLoad.style.display  = 'none';
-  modalTable.style.display = 'table';
-}
   })();
   </script>
 </body>
